@@ -1,0 +1,216 @@
+// SPDX-License-Identifier: GPL-3.0
+pragma solidity 0.8.18;
+
+import "@openzeppelin/contracts/access/Ownable.sol";
+
+contract Voting is Ownable {
+
+    WorkflowStatus public workflowStatus;
+    uint winningProposalId;
+    mapping (address => Voter) public voters;
+    Proposal[] public proposals;
+    uint private votersCount = 0;
+
+    struct Voter {
+        bool isRegistered;
+        bool hasVoted;
+        uint votedProposalId;
+    }
+
+    struct Proposal {
+        string description;
+        uint voteCount;
+    }
+
+    event VoterRegistered(address voterAddress); 
+    event WorkflowStatusChange(WorkflowStatus previousStatus, WorkflowStatus newStatus);
+    event ProposalRegistered(uint proposalId);
+    event Voted (address voter, uint proposalId);
+    // EVENT BONNUS
+    event ProposalCancel(uint proposalId);
+    event VoteCancel (address voter, uint proposalId);
+    
+    enum WorkflowStatus {
+        RegisteringVoters,
+        ProposalsRegistrationStarted,
+        ProposalsRegistrationEnded,
+        VotingSessionStarted,
+        VotingSessionEnded,
+        VotesTallied
+    }
+
+    constructor()  {
+        registerVoter(msg.sender);
+    }
+
+    modifier OnlyVoter() {
+        require(voters[msg.sender].isRegistered, "You must be registered to do this");
+        _;
+    }
+    
+    /*--------------------------------------------------------------------------------------------
+     * VVV ADMIN FUNCTIONS VVV 
+     */
+
+    // Changement de status du WorkflowStatus
+    function changeWorkflowStatus(WorkflowStatus _from, WorkflowStatus _to) internal onlyOwner{
+        require(workflowStatus == _from, "Invalid workflow status");
+        
+        workflowStatus = _to;
+        emit WorkflowStatusChange(_from, _to);
+    }
+
+    // L'administrateur du vote enregistre une liste blanche d'électeurs identifiés par leur adresse Ethereum.
+    function registerVoter(address _voterAddress) public onlyOwner{
+        require(workflowStatus == WorkflowStatus.RegisteringVoters, "Voters can only be registered during the voter registration phase");
+        require(!voters[_voterAddress].isRegistered, "Voter has already been registered");
+        
+        votersCount++;
+        voters[_voterAddress].isRegistered = true;
+        emit VoterRegistered(_voterAddress);
+    }
+
+    // L'administrateur du vote commence la session d'enregistrement de la proposition.
+    function startProposalRegistration() public onlyOwner {
+        require(workflowStatus == WorkflowStatus.RegisteringVoters, "Proposal registration can only start after voter registration");
+        require(votersCount > 1, "Administrator cannot be the only registered voter");
+
+        changeWorkflowStatus(WorkflowStatus.RegisteringVoters, WorkflowStatus.ProposalsRegistrationStarted);
+    }
+
+    // L'administrateur de vote met fin à la session d'enregistrement des propositions.
+    function endProposalRegistration() public onlyOwner {
+        require(workflowStatus == WorkflowStatus.ProposalsRegistrationStarted, "Proposal registration can only end during the voter registration phase");
+    
+        changeWorkflowStatus(WorkflowStatus.ProposalsRegistrationStarted, WorkflowStatus.ProposalsRegistrationEnded);
+    }
+
+    // L'administrateur du vote commence la session de vote.
+    function startVotingSession() public onlyOwner {
+        require(workflowStatus == WorkflowStatus.ProposalsRegistrationEnded, "Voting session can only start after proposal registration has ended");
+        require(votersCount > 1, "There must be at least 2 voters to start a Voting Session");
+
+        changeWorkflowStatus(WorkflowStatus.ProposalsRegistrationEnded, WorkflowStatus.VotingSessionStarted);
+    }
+
+    // L'administrateur du vote met fin à la session de vote.
+    function endVotingSession() public onlyOwner {
+        require(workflowStatus == WorkflowStatus.VotingSessionStarted, "Voting session can only end during the voting");
+        
+        changeWorkflowStatus(WorkflowStatus.VotingSessionStarted, WorkflowStatus.VotingSessionEnded);
+    }
+
+    // L'administrateur du vote comptabilise les votes.
+    function tallyVotes() public onlyOwner {
+        require(workflowStatus == WorkflowStatus.VotingSessionEnded, "Voting session is still active");
+        
+        changeWorkflowStatus(WorkflowStatus.VotingSessionEnded, WorkflowStatus.VotesTallied);
+
+        uint winningVoteCount = 0;
+        for (uint i = 0; i < proposals.length; i++) {
+            if (proposals[i].voteCount > winningVoteCount) {
+            winningVoteCount = proposals[i].voteCount;
+            winningProposalId = i;
+            }
+        }
+    }
+
+    /*--------------------------------------------------------------------------------------------
+     * VVV VOTER FUNCTIONS VVV 
+     */
+
+    // Les électeurs inscrits sont autorisés à enregistrer leurs propositions pendant que la session d'enregistrement est active.
+    function registerProposal(string memory description) public OnlyVoter {
+        require(workflowStatus == WorkflowStatus.ProposalsRegistrationStarted, "Proposals can only be registered during the proposal registration phase");
+        
+        proposals.push(Proposal(description, 0));
+        uint proposalId = proposals.length - 1;
+        emit ProposalRegistered(proposalId);
+    }
+    // Les électeurs inscrits votent pour leur proposition préférée.
+    function Votation(uint _proposalChoosed) public OnlyVoter {
+        require(workflowStatus == WorkflowStatus.VotingSessionStarted, "Voting is only allowed during the voting session");
+        require(!voters[msg.sender].hasVoted, "Your address as already voted");
+        
+        proposals[_proposalChoosed].voteCount ++;
+        voters[msg.sender].votedProposalId = _proposalChoosed;
+        voters[msg.sender].hasVoted = true;
+        emit Voted (msg.sender, _proposalChoosed);
+    }
+    
+
+    /*--------------------------------------------------------------------------------------------
+     * VVV PUBLIC FUNCTIONS VVV
+     */
+
+    // Tout le monde peut vérifier les derniers détails de la proposition gagnante.
+    function getwinner() public view returns (string memory description, uint voteCount) {
+        require(workflowStatus == WorkflowStatus.VotesTallied, "The votes must be tallied before");
+        
+        Proposal storage proposal = proposals[winningProposalId];
+        description = proposal.description;
+        voteCount = proposal.voteCount;
+    }
+
+    /*--------------------------------------------------------------------------------------------
+     * VVV BONUS ADMIN-VOTER-PUBLIC FUNCTIONS VVV
+     */
+
+    // Renvoie le nombre d'électeurs
+    function getVotersCount() public view returns (uint) {
+        return votersCount;
+    }
+
+    // Retourne les informations d'une poposition enregitrées
+    function getProposal(uint proposalId) public view returns (string memory description, uint voteCount) {
+        Proposal storage proposal = proposals[proposalId];
+        description = proposal.description;
+        voteCount = proposal.voteCount;
+    }
+            
+    // Renvois la liste des propositions enregistrées 
+    function getProposalList() public view returns (Proposal[] memory) {
+        return proposals;
+    }
+
+    // Les électeurs inscrits peuvent annuler leur proposition pendant que la session d'enregistrement est active.
+    function UndoProposal(uint proposalId) public OnlyVoter {
+        require(workflowStatus == WorkflowStatus.ProposalsRegistrationStarted, "Proposal canceling is only allowed during the proposal registration phase");
+        require(proposalId < proposals.length, "This proposal ID doesn't exist");
+        
+        delete proposals[proposalId];
+        emit ProposalCancel(proposalId);
+    }
+
+    // Les électeurs inscrits peuvent annuler leur vote
+    function UndoVotation(uint _proposalChoosed) public OnlyVoter {
+        require(workflowStatus == WorkflowStatus.VotingSessionStarted, "Votation canceling is only allowed during the voting session");
+        require(voters[msg.sender].hasVoted, "You didn't voted yet");
+        require(voters[msg.sender].votedProposalId == _proposalChoosed, "You cannot cancel a vote for another proposal");
+    
+        proposals[_proposalChoosed].voteCount --;
+        voters[msg.sender].votedProposalId = _proposalChoosed;
+        voters[msg.sender].hasVoted = false;
+        emit VoteCancel (msg.sender, _proposalChoosed);
+    }
+
+    // Retoure la listes des propositions votées dans l'odre décroissant 
+    function getwinnerByOrder() public view returns (Proposal[] memory) {
+        Proposal[] memory result = new Proposal[](proposals.length);
+        for (uint i = 0; i < proposals.length; i++) {
+            result[i] = proposals[i];
+        }
+        // Tri de la liste de propositions par voteCount en ordre décroissant
+        for (uint i = 0; i < result.length; i++) {
+            for (uint j = i + 1; j < result.length; j++) {
+                if (result[i].voteCount < result[j].voteCount) {
+                    Proposal memory temp = result[i];
+                    result[i] = result[j];
+                    result[j] = temp;
+                }
+            }
+        }
+        return result;
+    }
+
+}
